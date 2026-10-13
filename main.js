@@ -2,6 +2,7 @@
 const $=id=>document.getElementById(id);
 let file=null, midiBlob=null, objectURL=null, busy=false;
 let originalNotes=[],detectedNotes=[],midiAudioContext=null,midiVoices=[],midiStopTimer=null,midiPlaying=false;
+let midiPaused=false, playbackStartAt=0, playbackDuration=0, playheadFrame=null;
 let selectedNoteKey=null; const velocityEdits=new Map(); let rollWidth=660,rollDuration=1;
 const MODEL_URL=new URL('./model/model.json', import.meta.url).href;
 const setStatus=(s)=>{$('status').textContent=s};
@@ -37,7 +38,7 @@ function preview(notes){
   svg.setAttribute('width',width);svg.setAttribute('height',height);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   for(let p=minPitch;p<=maxPitch;p++){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',0);rect.setAttribute('y',(maxPitch-p)*16);rect.setAttribute('width',width);rect.setAttribute('height',16);rect.setAttribute('fill',p%12===0?'#323236':p%2?'#262629':'#222225');svg.append(rect)}
   for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#873F52':velocityColor(noteVelocity(n)));rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
-  roll.append(svg);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
+  roll.append(svg);roll.append($('playhead'));updatePlayhead(0);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
 }
 function selectVelocityNote(key){
   selectedNoteKey=key;const note=detectedNotes.find(n=>noteKey(n)===key);if(!note)return;
@@ -58,6 +59,7 @@ function renderVelocityBars(){
   for(const note of detectedNotes){const key=noteKey(note),bar=document.createElement('div');bar.className='velocity-bar';bar.dataset.key=key;bar.style.left=(note.startTime*100)+'px';bar.style.height=(noteVelocity(note)/127*100)+'%';bar.style.background=velocityColor(noteVelocity(note));bar.title=`${noteLabel(note.pitchMidi)} · ${noteVelocity(note)}`;bar.classList.toggle('selected',key===selectedNoteKey);
     bar.addEventListener('pointerdown',e=>{e.preventDefault();bar.setPointerCapture(e.pointerId);const update=ev=>{const rect=holder.getBoundingClientRect(),h=holder.clientHeight,y=ev.clientY-rect.top;setNoteVelocity(key,Math.round((1-y/h)*127));};update(e);const move=ev=>update(ev);const done=()=>{bar.removeEventListener('pointermove',move);bar.removeEventListener('pointerup',done);bar.removeEventListener('pointercancel',done)};bar.addEventListener('pointermove',move);bar.addEventListener('pointerup',done);bar.addEventListener('pointercancel',done)});holder.append(bar);
   }
+  holder.append($('velocityPlayhead'));updatePlayhead(0);
   const current=detectedNotes.find(n=>noteKey(n)===selectedNoteKey);
   if(current)selectVelocityNote(selectedNoteKey);else{$('velocitySlider').disabled=true;$('resetVelocity').disabled=true;$('velocityValue').textContent='—';$('selectedNote').textContent='Selecciona una nota';}
 }
@@ -138,30 +140,63 @@ function pianoBuffer(ctx,pitch){
   pianoBuffers.set(pitch,buf);return buf;
 }
 // Beta 1.5: local MIDI note audition using Web Audio. No external soundfont needed.
+// AUREL 2.3: shared AudioContext clock, resumable pause and synchronized playhead.
+function formatClock(t){t=Math.max(0,Math.floor(t||0));return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`;}
+function playbackPosition(){return midiAudioContext?Math.max(0,Math.min(playbackDuration,midiAudioContext.currentTime-playbackStartAt)):0;}
+function updatePlayhead(time){
+  const x=Math.max(0,time*100);
+  for(const id of ['playhead','velocityPlayhead']){const el=$(id);if(el){el.style.left=x+'px';el.style.display=detectedNotes.length?'block':'none';}}
+  const total=playbackDuration||Math.max(0,...detectedNotes.map(n=>n.endTime));
+  $('transportTime').textContent=`${formatClock(time)} / ${formatClock(total)}`;
+}
+function tickPlayhead(){
+  if(!midiPlaying||midiPaused||!midiAudioContext)return;
+  const time=playbackPosition();updatePlayhead(time);
+  const roll=$('roll'),px=time*100;
+  if(px>roll.scrollLeft+roll.clientWidth-55 || px<roll.scrollLeft){roll.scrollLeft=Math.max(0,px-roll.clientWidth*.25);}
+  if(time>=playbackDuration+.16){stopMidiPlayback();$('midiPlaybackStatus').textContent='Reproducción finalizada.';return;}
+  playheadFrame=requestAnimationFrame(tickPlayhead);
+}
 function stopMidiPlayback(){
+  if(playheadFrame!==null){cancelAnimationFrame(playheadFrame);playheadFrame=null;}
   if(midiStopTimer!==null){clearTimeout(midiStopTimer);midiStopTimer=null;}
   for(const voice of midiVoices){try{voice.source.stop()}catch(e){}try{voice.source.disconnect();voice.gain.disconnect()}catch(e){}}
-  midiVoices=[];
-  midiPlaying=false;
+  midiVoices=[];midiPlaying=false;midiPaused=false;playbackStartAt=0;playbackDuration=0;
   if(midiAudioContext){const ctx=midiAudioContext;midiAudioContext=null;ctx.close().catch(()=>{});}
-  if($('playMidi')){$('playMidi').disabled=!detectedNotes.length;$('playMidi').textContent='▶ Reproducir MIDI';}
+  if($('playMidi')){$('playMidi').disabled=!detectedNotes.length;$('playMidi').textContent='▶';$('playMidi').setAttribute('aria-label','Reproducir MIDI');}
   if($('stopMidi'))$('stopMidi').disabled=true;
+  updatePlayhead(0);
   if($('midiPlaybackStatus'))$('midiPlaybackStatus').textContent='Reproducción detenida.';
 }
 async function playMidiPlayback(){
-  if(!detectedNotes.length||midiPlaying)return;
-  const ctx=new (window.AudioContext||window.webkitAudioContext)();
-  midiAudioContext=ctx;
+  if(!detectedNotes.length)return;
+  if(midiPlaying){
+    const ctx=midiAudioContext;if(!ctx)return;
+    if(!midiPaused){
+      // Suspend freezes the audio clock and all scheduled voices at their current position.
+      midiPaused=true;
+      if(playheadFrame!==null){cancelAnimationFrame(playheadFrame);playheadFrame=null;}
+      await ctx.suspend();
+      if(midiAudioContext!==ctx)return;
+      updatePlayhead(playbackPosition());
+      $('playMidi').textContent='▶';$('playMidi').setAttribute('aria-label','Continuar MIDI');
+      $('midiPlaybackStatus').textContent='Reproducción en pausa.';
+    }else{
+      await ctx.resume();if(midiAudioContext!==ctx)return;
+      midiPaused=false;$('playMidi').textContent='Ⅱ';$('playMidi').setAttribute('aria-label','Pausar MIDI');
+      $('midiPlaybackStatus').textContent='Reproduciendo MIDI con piano…';tickPlayhead();
+    }
+    return;
+  }
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();midiAudioContext=ctx;
   try{
-    await ctx.resume();
-    if(midiAudioContext!==ctx){await ctx.close();return;}
+    await ctx.resume();if(midiAudioContext!==ctx){await ctx.close();return;}
     const startAt=ctx.currentTime+0.08;
-    const duration=Math.max(...detectedNotes.map(n=>n.endTime));
+    playbackStartAt=startAt;playbackDuration=Math.max(...detectedNotes.map(n=>n.endTime));
     for(const note of detectedNotes){
       const start=Math.max(0,note.startTime),end=Math.max(start+0.02,note.endTime);
       const pitch=Math.max(0,Math.min(127,Math.round(note.pitchMidi)));
-      const source=ctx.createBufferSource(),gain=ctx.createGain();
-      source.buffer=pianoBuffer(ctx,pitch);
+      const source=ctx.createBufferSource(),gain=ctx.createGain();source.buffer=pianoBuffer(ctx,pitch);
       const volume=Math.max(0.012,Math.min(0.30,Math.pow(noteVelocity(note)/127,1.5)*0.24));
       const at=startAt+start,off=startAt+end;
       gain.gain.setValueAtTime(0,at);
@@ -169,14 +204,13 @@ async function playMidiPlayback(){
       gain.gain.setValueAtTime(volume,Math.max(at+0.006,off-0.08));
       gain.gain.exponentialRampToValueAtTime(0.0001,Math.max(at+0.012,off+0.14));
       source.connect(gain);gain.connect(ctx.destination);
-      source.start(at);source.stop(Math.min(at+3.6,off+0.16));
-      midiVoices.push({source,gain});
+      source.start(at);source.stop(Math.min(at+3.6,off+0.16));midiVoices.push({source,gain});
     }
-    midiPlaying=true;
-    $('playMidi').disabled=false;$('playMidi').textContent='■ Detener MIDI';$('stopMidi').disabled=false;
+    midiPlaying=true;midiPaused=false;
+    $('playMidi').textContent='Ⅱ';$('playMidi').setAttribute('aria-label','Pausar MIDI');$('stopMidi').disabled=false;
     $('midiPlaybackStatus').textContent=`Reproduciendo ${detectedNotes.length} notas con piano…`;
-    midiStopTimer=setTimeout(()=>{stopMidiPlayback();$('midiPlaybackStatus').textContent='Reproducción finalizada.'},Math.ceil((duration+0.25)*1000));
+    tickPlayhead();
   }catch(err){stopMidiPlayback();console.error(err);$('midiPlaybackStatus').textContent='No se pudo reproducir: '+(err.message||err);}
 }
-$('playMidi').onclick=()=>{if(midiPlaying)stopMidiPlayback();else playMidiPlayback()};
+$('playMidi').onclick=playMidiPlayback;
 $('stopMidi').onclick=stopMidiPlayback;
