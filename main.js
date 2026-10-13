@@ -38,7 +38,20 @@ function preview(notes){
   svg.setAttribute('width',width);svg.setAttribute('height',height);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   for(let p=minPitch;p<=maxPitch;p++){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',0);rect.setAttribute('y',(maxPitch-p)*16);rect.setAttribute('width',width);rect.setAttribute('height',16);rect.setAttribute('fill',p%12===0?'#323236':p%2?'#262629':'#222225');svg.append(rect)}
   for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#873F52':velocityColor(noteVelocity(n)));rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
-  roll.append(svg);roll.append($('playhead'));updatePlayhead(0);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
+  // Place the playhead INSIDE the SVG coordinate system. An absolute child of
+  // the scrolling viewport is not aligned with its scrolled content.
+  const playheadGroup=document.createElementNS(NS,'g');
+  playheadGroup.setAttribute('id','svgPlayhead');
+  playheadGroup.setAttribute('pointer-events','none');
+  const glow=document.createElementNS(NS,'line');
+  glow.setAttribute('x1',0);glow.setAttribute('x2',0);glow.setAttribute('y1',0);glow.setAttribute('y2',height);
+  glow.setAttribute('stroke','#c0778d');glow.setAttribute('stroke-width','7');glow.setAttribute('opacity','.22');
+  const line=document.createElementNS(NS,'line');
+  line.setAttribute('x1',0);line.setAttribute('x2',0);line.setAttribute('y1',0);line.setAttribute('y2',height);
+  line.setAttribute('stroke','#f0a3b7');line.setAttribute('stroke-width','2.5');
+  const marker=document.createElementNS(NS,'path');marker.setAttribute('d','M -7 0 L 7 0 L 0 10 Z');marker.setAttribute('fill','#f0a3b7');
+  playheadGroup.append(glow,line,marker);svg.append(playheadGroup);
+  roll.append(svg);updatePlayhead(0);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
 }
 function selectVelocityNote(key){
   selectedNoteKey=key;const note=detectedNotes.find(n=>noteKey(n)===key);if(!note)return;
@@ -145,7 +158,10 @@ function formatClock(t){t=Math.max(0,Math.floor(t||0));return `${Math.floor(t/60
 function playbackPosition(){return midiAudioContext?Math.max(0,Math.min(playbackDuration,midiAudioContext.currentTime-playbackStartAt)):0;}
 function updatePlayhead(time){
   const x=Math.max(0,time*100);
-  for(const id of ['playhead','velocityPlayhead']){const el=$(id);if(el){el.style.left=x+'px';el.style.display=detectedNotes.length?'block':'none';}}
+  const svgHead=$('svgPlayhead');
+  if(svgHead){svgHead.setAttribute('transform',`translate(${Math.min(x,rollWidth)},0)`);svgHead.style.display=detectedNotes.length?'':'none';}
+  const velocityHead=$('velocityPlayhead');
+  if(velocityHead){velocityHead.style.left=x+'px';velocityHead.style.display=detectedNotes.length?'block':'none';}
   const total=playbackDuration||Math.max(0,...detectedNotes.map(n=>n.endTime));
   $('transportTime').textContent=`${formatClock(time)} / ${formatClock(total)}`;
 }
