@@ -36,13 +36,13 @@ function preview(notes){
   const width=rollWidth,height=(maxPitch-minPitch+1)*16,NS='http://www.w3.org/2000/svg',svg=document.createElementNS(NS,'svg');
   svg.setAttribute('width',width);svg.setAttribute('height',height);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   for(let p=minPitch;p<=maxPitch;p++){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',0);rect.setAttribute('y',(maxPitch-p)*16);rect.setAttribute('width',width);rect.setAttribute('height',16);rect.setAttribute('fill',p%12===0?'#323236':p%2?'#262629':'#222225');svg.append(rect)}
-  for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#ffffff':velocityColor(noteVelocity(n)));rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
+  for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#873F52':velocityColor(noteVelocity(n)));rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
   roll.append(svg);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
 }
 function selectVelocityNote(key){
   selectedNoteKey=key;const note=detectedNotes.find(n=>noteKey(n)===key);if(!note)return;
   const velocity=noteVelocity(note);$('velocitySlider').disabled=false;$('resetVelocity').disabled=false;$('velocitySlider').value=velocity;$('velocityValue').textContent=velocity;$('selectedNote').textContent=`${noteLabel(note.pitchMidi)} · ${note.startTime.toFixed(2)} s`;
-  document.querySelectorAll('#roll [data-key]').forEach(el=>el.setAttribute('fill',el.dataset.key===key?'#c2cfff':'#7995ff'));
+  document.querySelectorAll('#roll [data-key]').forEach(el=>el.setAttribute('fill',el.dataset.key===key?'#873F52':velocityColor(noteVelocity(detectedNotes.find(n=>noteKey(n)===el.dataset.key) || note))));
   document.querySelectorAll('.velocity-bar').forEach(el=>el.classList.toggle('selected',el.dataset.key===key));
 }
 function setNoteVelocity(key,value){
@@ -50,7 +50,7 @@ function setNoteVelocity(key,value){
   const v=Math.max(1,Math.min(127,Math.round(value)));velocityEdits.set(key,v);selectedNoteKey=key;
   note.velocity=v; midiBlob=midiFromNotes(detectedNotes);$('download').disabled=false;
   const bar=Array.from(document.querySelectorAll('.velocity-bar')).find(el=>el.dataset.key===key);
-  if(bar){bar.style.height=(v/127*100)+'%';bar.title=`${noteLabel(note.pitchMidi)} · ${v}`;}
+  if(bar){bar.style.height=(v/127*100)+'%';bar.style.background=velocityColor(v);bar.title=`${noteLabel(note.pitchMidi)} · ${v}`;}
   selectVelocityNote(key);$('velocitySummary').textContent='Cambio aplicado a la reproducción y al archivo MIDI. No hace falta volver a convertir.';
 }
 function renderVelocityBars(){
@@ -114,10 +114,33 @@ function applyMidiCleaning(){
 $('cleaning').addEventListener('input',applyMidiCleaning);
 $('download').onclick=()=>{if(!midiBlob)return;const url=URL.createObjectURL(midiBlob);const a=document.createElement('a');a.href=url;a.download=(file?.name||'audio').replace(/\.[^.]+$/,'')+'.mid';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 
+// AUREL 2.2: locally synthesized piano timbre. No external downloads.
+const pianoBuffers=new Map();
+function pianoBuffer(ctx,pitch){
+  if(pianoBuffers.has(pitch))return pianoBuffers.get(pitch);
+  const sr=ctx.sampleRate, seconds=3.6, size=Math.ceil(sr*seconds),buf=ctx.createBuffer(1,size,sr),data=buf.getChannelData(0);
+  const f=440*Math.pow(2,(pitch-69)/12);
+  const harmonics=[1,.42,.21,.13,.075,.04,.022];
+  const phases=harmonics.map((_,i)=>i*0.73);
+  for(let i=0;i<size;i++){
+    const t=i/sr, attack=1-Math.exp(-t*800);
+    let v=0;
+    for(let h=0;h<harmonics.length;h++){
+      const k=h+1, frequency=f*k*Math.sqrt(1+0.00013*k*k);
+      if(frequency>=sr*.48)continue;
+      const decay=Math.exp(-t*(1.2+h*.62));
+      v+=harmonics[h]*decay*Math.sin(2*Math.PI*frequency*t+phases[h]);
+    }
+    // The soft percussive hammer transient avoids a sustained flute-like tone.
+    const hammer=.09*Math.exp(-t*65)*Math.sin(2*Math.PI*Math.min(f*5,sr*.42)*t);
+    data[i]=(v+hammer)*attack*.54;
+  }
+  pianoBuffers.set(pitch,buf);return buf;
+}
 // Beta 1.5: local MIDI note audition using Web Audio. No external soundfont needed.
 function stopMidiPlayback(){
   if(midiStopTimer!==null){clearTimeout(midiStopTimer);midiStopTimer=null;}
-  for(const voice of midiVoices){try{voice.osc.stop()}catch(e){}try{voice.osc.disconnect();voice.gain.disconnect()}catch(e){}}
+  for(const voice of midiVoices){try{voice.source.stop()}catch(e){}try{voice.source.disconnect();voice.gain.disconnect()}catch(e){}}
   midiVoices=[];
   midiPlaying=false;
   if(midiAudioContext){const ctx=midiAudioContext;midiAudioContext=null;ctx.close().catch(()=>{});}
@@ -137,22 +160,21 @@ async function playMidiPlayback(){
     for(const note of detectedNotes){
       const start=Math.max(0,note.startTime),end=Math.max(start+0.02,note.endTime);
       const pitch=Math.max(0,Math.min(127,Math.round(note.pitchMidi)));
-      const osc=ctx.createOscillator(),gain=ctx.createGain();
-      osc.type='triangle';
-      osc.frequency.value=440*Math.pow(2,(pitch-69)/12);
-      const volume=Math.max(0.004,Math.min(0.11,(noteVelocity(note)/127)*0.10));
+      const source=ctx.createBufferSource(),gain=ctx.createGain();
+      source.buffer=pianoBuffer(ctx,pitch);
+      const volume=Math.max(0.012,Math.min(0.30,Math.pow(noteVelocity(note)/127,1.5)*0.24));
       const at=startAt+start,off=startAt+end;
       gain.gain.setValueAtTime(0,at);
-      gain.gain.linearRampToValueAtTime(volume,at+Math.min(0.012,(end-start)/3));
-      gain.gain.setValueAtTime(volume,Math.max(at+0.012,off-0.035));
-      gain.gain.linearRampToValueAtTime(0,off);
-      osc.connect(gain);gain.connect(ctx.destination);
-      osc.start(at);osc.stop(off+0.015);
-      midiVoices.push({osc,gain});
+      gain.gain.linearRampToValueAtTime(volume,at+0.006);
+      gain.gain.setValueAtTime(volume,Math.max(at+0.006,off-0.08));
+      gain.gain.exponentialRampToValueAtTime(0.0001,Math.max(at+0.012,off+0.14));
+      source.connect(gain);gain.connect(ctx.destination);
+      source.start(at);source.stop(Math.min(at+3.6,off+0.16));
+      midiVoices.push({source,gain});
     }
     midiPlaying=true;
     $('playMidi').disabled=false;$('playMidi').textContent='■ Detener MIDI';$('stopMidi').disabled=false;
-    $('midiPlaybackStatus').textContent=`Reproduciendo ${detectedNotes.length} notas con sintetizador…`;
+    $('midiPlaybackStatus').textContent=`Reproduciendo ${detectedNotes.length} notas con piano…`;
     midiStopTimer=setTimeout(()=>{stopMidiPlayback();$('midiPlaybackStatus').textContent='Reproducción finalizada.'},Math.ceil((duration+0.25)*1000));
   }catch(err){stopMidiPlayback();console.error(err);$('midiPlaybackStatus').textContent='No se pudo reproducir: '+(err.message||err);}
 }
