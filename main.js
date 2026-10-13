@@ -28,15 +28,16 @@ function defaultVelocity(n){return Math.max(1,Math.min(127,Math.round((n.amplitu
 function noteKey(n){return `${n.pitchMidi}|${Math.round(n.startTime*1000)}`;}
 function noteVelocity(n){return velocityEdits.get(noteKey(n))??defaultVelocity(n);}
 function noteLabel(p){const names=['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];return names[p%12]+(Math.floor(p/12)-1);}
+function velocityColor(v){const hue=Math.round(220-(Math.max(1,Math.min(127,v))-1)/126*215);return `hsl(${hue} 82% 65%)`;}
 function preview(notes){
   const roll=$('roll');roll.replaceChildren();
   const minPitch=Math.max(0,Math.min(...notes.map(n=>n.pitchMidi))-2),maxPitch=Math.min(127,Math.max(...notes.map(n=>n.pitchMidi))+2);
   rollDuration=Math.max(.5,...notes.map(n=>n.endTime));rollWidth=Math.max(700,Math.round(rollDuration*100));
   const width=rollWidth,height=(maxPitch-minPitch+1)*16,NS='http://www.w3.org/2000/svg',svg=document.createElementNS(NS,'svg');
   svg.setAttribute('width',width);svg.setAttribute('height',height);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
-  for(let p=minPitch;p<=maxPitch;p++){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',0);rect.setAttribute('y',(maxPitch-p)*16);rect.setAttribute('width',width);rect.setAttribute('height',16);rect.setAttribute('fill',p%12===0?'#26314a':p%2?'#192131':'#161d2c');svg.append(rect)}
-  for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#c2cfff':'#7995ff');rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
-  roll.append(svg);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='block';$('empty').style.display='none';renderVelocityBars();
+  for(let p=minPitch;p<=maxPitch;p++){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',0);rect.setAttribute('y',(maxPitch-p)*16);rect.setAttribute('width',width);rect.setAttribute('height',16);rect.setAttribute('fill',p%12===0?'#323236':p%2?'#262629':'#222225');svg.append(rect)}
+  for(const n of notes){const rect=document.createElementNS(NS,'rect');rect.setAttribute('x',n.startTime*100);rect.setAttribute('y',(maxPitch-n.pitchMidi)*16+2);rect.setAttribute('width',Math.max(2,(n.endTime-n.startTime)*100));rect.setAttribute('height',12);rect.setAttribute('rx',3);rect.setAttribute('fill',selectedNoteKey===noteKey(n)?'#ffffff':velocityColor(noteVelocity(n)));rect.style.cursor='pointer';rect.dataset.key=noteKey(n);rect.addEventListener('click',()=>selectVelocityNote(noteKey(n)));const t=document.createElementNS(NS,'title');t.textContent=`${noteLabel(n.pitchMidi)} · velocidad ${noteVelocity(n)} · ${n.startTime.toFixed(2)}–${n.endTime.toFixed(2)} s`;rect.append(t);svg.append(rect)}
+  roll.append(svg);$('stats').textContent=`${notes.length} notas · ${rollDuration.toFixed(2)} s · Desplázate horizontalmente para explorar.`;$('result').style.display='flex';$('empty').style.display='none';renderVelocityBars();
 }
 function selectVelocityNote(key){
   selectedNoteKey=key;const note=detectedNotes.find(n=>noteKey(n)===key);if(!note)return;
@@ -54,7 +55,7 @@ function setNoteVelocity(key,value){
 }
 function renderVelocityBars(){
   const holder=$('velocityBars');holder.replaceChildren();holder.style.width=rollWidth+'px';
-  for(const note of detectedNotes){const key=noteKey(note),bar=document.createElement('div');bar.className='velocity-bar';bar.dataset.key=key;bar.style.left=(note.startTime*100)+'px';bar.style.height=(noteVelocity(note)/127*100)+'%';bar.title=`${noteLabel(note.pitchMidi)} · ${noteVelocity(note)}`;bar.classList.toggle('selected',key===selectedNoteKey);
+  for(const note of detectedNotes){const key=noteKey(note),bar=document.createElement('div');bar.className='velocity-bar';bar.dataset.key=key;bar.style.left=(note.startTime*100)+'px';bar.style.height=(noteVelocity(note)/127*100)+'%';bar.style.background=velocityColor(noteVelocity(note));bar.title=`${noteLabel(note.pitchMidi)} · ${noteVelocity(note)}`;bar.classList.toggle('selected',key===selectedNoteKey);
     bar.addEventListener('pointerdown',e=>{e.preventDefault();bar.setPointerCapture(e.pointerId);const update=ev=>{const rect=holder.getBoundingClientRect(),h=holder.clientHeight,y=ev.clientY-rect.top;setNoteVelocity(key,Math.round((1-y/h)*127));};update(e);const move=ev=>update(ev);const done=()=>{bar.removeEventListener('pointermove',move);bar.removeEventListener('pointerup',done);bar.removeEventListener('pointercancel',done)};bar.addEventListener('pointermove',move);bar.addEventListener('pointerup',done);bar.addEventListener('pointercancel',done)});holder.append(bar);
   }
   const current=detectedNotes.find(n=>noteKey(n)===selectedNoteKey);
@@ -120,7 +121,7 @@ function stopMidiPlayback(){
   midiVoices=[];
   midiPlaying=false;
   if(midiAudioContext){const ctx=midiAudioContext;midiAudioContext=null;ctx.close().catch(()=>{});}
-  if($('playMidi'))$('playMidi').disabled=!detectedNotes.length;
+  if($('playMidi')){$('playMidi').disabled=!detectedNotes.length;$('playMidi').textContent='▶ Reproducir MIDI';}
   if($('stopMidi'))$('stopMidi').disabled=true;
   if($('midiPlaybackStatus'))$('midiPlaybackStatus').textContent='Reproducción detenida.';
 }
@@ -150,10 +151,10 @@ async function playMidiPlayback(){
       midiVoices.push({osc,gain});
     }
     midiPlaying=true;
-    $('playMidi').disabled=true;$('stopMidi').disabled=false;
+    $('playMidi').disabled=false;$('playMidi').textContent='■ Detener MIDI';$('stopMidi').disabled=false;
     $('midiPlaybackStatus').textContent=`Reproduciendo ${detectedNotes.length} notas con sintetizador…`;
     midiStopTimer=setTimeout(()=>{stopMidiPlayback();$('midiPlaybackStatus').textContent='Reproducción finalizada.'},Math.ceil((duration+0.25)*1000));
   }catch(err){stopMidiPlayback();console.error(err);$('midiPlaybackStatus').textContent='No se pudo reproducir: '+(err.message||err);}
 }
-$('playMidi').onclick=playMidiPlayback;
+$('playMidi').onclick=()=>{if(midiPlaying)stopMidiPlayback();else playMidiPlayback()};
 $('stopMidi').onclick=stopMidiPlayback;
